@@ -1,12 +1,33 @@
+import math
 import random
 import pygame
 from game.block import Block
 from game.debris import Debris
 
-PERFECT_MARGIN = 3        # px error that still counts as perfect
+# --- Task 2 tuning ---
+PERFECT_MARGIN = 3        # px alignment error that still counts as perfect
 PERFECT_BONUS = 2         # extra points on top of the normal +1
 STREAK_FOR_GROWTH = 3     # perfects in a row needed to widen the block
 GROWTH_AMOUNT = 10        # px added when the streak is reached
+
+# --- Task 4: sky stages as (height, top colour, bottom colour) ---
+SKY_STAGES = [
+    (0,  (24, 27, 36),  (38, 46, 68)),     # original dark grey-blue
+    (8,  (28, 48, 110), (96, 140, 200)),   # twilight blue
+    (18, (48, 24, 96),  (190, 90, 140)),   # dusk purple
+    (30, (8, 8, 32),    (30, 22, 66)),     # night
+    (45, (0, 0, 0),     (6, 6, 18)),       # stratosphere black
+]
+STARS_START = 24          # height where stars begin to fade in
+STARS_FULL = 32           # height where stars are fully visible
+
+
+def lerp(a, b, t):
+    return a + (b - a) * t
+
+
+def lerp_color(c1, c2, t):
+    return tuple(int(lerp(c1[i], c2[i], t)) for i in range(3))
 
 
 class GameEngine:
@@ -20,6 +41,13 @@ class GameEngine:
         self.font_hud = pygame.font.SysFont(None, 28)
         self.font_big = pygame.font.SysFont(None, 46)
         self.font_popup = pygame.font.SysFont(None, 40)
+
+        # fixed star field (x, y, radius, twinkle phase), reused across restarts
+        self.stars = [
+            (random.randint(0, width), random.randint(0, height),
+             random.choice([1, 1, 2]), random.uniform(0, math.tau))
+            for _ in range(70)
+        ]
 
         self.reset()
 
@@ -38,8 +66,9 @@ class GameEngine:
         self.score = 0
         self.game_over = False
         self.perfect_streak = 0
-        self.popups = []
         self.debris = []
+        self.popups = []
+        self.sky_height = 0.0   # eased copy of score so the sky shifts smoothly
 
         base_x = (self.width - self.base_width) // 2
         base_y = self.height - 60
@@ -57,6 +86,9 @@ class GameEngine:
         start_x = 25 if random.choice([True, False]) else self.width - 25 - top_block.width
         self.active_block = Block(start_x, next_y, top_block.width, self.block_height, color, speed=speed)
 
+    # ------------------------------------------------------------------
+    # Popups & debris helpers
+    # ------------------------------------------------------------------
     def add_popup(self, text, x, y, color=(255, 215, 0)):
         self.popups.append({"text": text, "x": x, "y": y, "life": 50, "max_life": 50, "color": color})
 
@@ -66,6 +98,9 @@ class GameEngine:
         self.debris.append(Debris(x, y, width, self.block_height, color,
                                   vx=vx, vy=random.uniform(-2.0, 0.0)))
 
+    # ------------------------------------------------------------------
+    # Core gameplay
+    # ------------------------------------------------------------------
     def drop_block(self):
         if self.game_over:
             return
@@ -77,10 +112,11 @@ class GameEngine:
         right = min(act.x + act.width, top_block.x + top_block.width)
         overlap = right - left
 
+        # Task 1 fix: positive overlap means the block landed on the tower.
         is_successful_drop = overlap > 0
 
         if not is_successful_drop:
-            # missed completely: the whole block tumbles away
+            # Missed completely: the whole block tumbles away.
             self.spawn_debris(act.x, act.y, act.width, act.color, vx=act.direction * 2.0)
             self.game_over = True
             return
@@ -90,7 +126,7 @@ class GameEngine:
         popup_y = act.y - 10
 
         if is_perfect:
-            # snap into alignment, no trimming, bonus points
+            # Task 2: snap into alignment, no trimming, bonus points.
             new_x = top_block.x
             new_w = top_block.width
             self.perfect_streak += 1
@@ -102,11 +138,12 @@ class GameEngine:
                 if grown_w > new_w:
                     new_x -= (grown_w - new_w) / 2
                     new_w = grown_w
+                    # keep the block inside the arena walls used by Block.update
                     new_x = max(20.0, min(new_x, self.width - 20 - new_w))
                     self.add_popup("WIDTH UP!", popup_x, popup_y - 34, color=(120, 255, 160))
                 self.perfect_streak = 0
         else:
-            # normal drop: trim to the overlap and shed the overhang as debris
+            # Normal drop: trim to the overlap and shed the overhang as debris.
             new_x = left
             new_w = max(10.0, overlap)
             self.perfect_streak = 0
@@ -158,8 +195,41 @@ class GameEngine:
             p["life"] -= 1
         self.popups = [p for p in self.popups if p["life"] > 0]
 
+        # ease the sky toward the current height
+        self.sky_height += (self.score - self.sky_height) * 0.05
+
+    # ------------------------------------------------------------------
+    # Rendering
+    # ------------------------------------------------------------------
+    def sky_colors(self):
+        h = self.sky_height
+        for i in range(len(SKY_STAGES) - 1):
+            h0, top0, bot0 = SKY_STAGES[i]
+            h1, top1, bot1 = SKY_STAGES[i + 1]
+            if h < h1:
+                t = max(0.0, (h - h0) / (h1 - h0))
+                return lerp_color(top0, top1, t), lerp_color(bot0, bot1, t)
+        return SKY_STAGES[-1][1], SKY_STAGES[-1][2]
+
+    def draw_sky(self, screen):
+        top, bottom = self.sky_colors()
+        band = 4
+        for y in range(0, self.height, band):
+            color = lerp_color(top, bottom, y / self.height)
+            pygame.draw.rect(screen, color, (0, y, self.width, band))
+
+        star_strength = (self.sky_height - STARS_START) / (STARS_FULL - STARS_START)
+        star_strength = max(0.0, min(1.0, star_strength))
+        if star_strength > 0:
+            now = pygame.time.get_ticks() / 400.0
+            for sx, sy, r, phase in self.stars:
+                twinkle = 0.6 + 0.4 * math.sin(now + phase)
+                c = int(255 * star_strength * twinkle)
+                if c > 10:
+                    pygame.draw.circle(screen, (c, c, c), (sx, sy), r)
+
     def render(self, screen):
-        screen.fill((24, 27, 36))
+        self.draw_sky(screen)
 
         title_surf = self.font_title.render("Skyscraper Stack", True, (245, 245, 245))
         screen.blit(title_surf, (self.width // 2 - title_surf.get_width() // 2, 16))
