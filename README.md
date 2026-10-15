@@ -1,6 +1,8 @@
 # Skyscraper Stack Repair Lab
 
 This project is a precision timing and balance tower stacking game using **Pygame**. It introduces students to 1D bounding-box intersection math, dynamic geometry slicing, vertical camera offset scrolling, and escalating difficulty curves within an object-oriented codebase.
+
+Chat link: https://claude.ai/share/ed80b498-98ea-4c44-8be9-4cecd90b175b
 ---
 
 ## What's Provided
